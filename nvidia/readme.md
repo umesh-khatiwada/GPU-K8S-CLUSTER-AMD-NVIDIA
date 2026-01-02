@@ -51,6 +51,68 @@ helm install --wait --generate-name \
 You should now have a working Kind cluster that can access your GPU. Verify it by running a simple pod:
 
 kubectl apply -f - << EOF
+# NVIDIA — Kind GPU support
+
+Credit to @klueska for the original solution. This document explains how to configure
+Kind so it can access NVIDIA GPUs on your machine.
+
+## Prerequisites
+
+- Install the NVIDIA Container Toolkit (follow the official NVIDIA install docs)
+
+## Configure Docker / NVIDIA runtime
+
+```sh
+sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
+sudo systemctl restart docker
+```
+
+## Enable device-volume mount support
+
+Set `accept-nvidia-visible-devices-as-volume-mounts = true` in `/etc/nvidia-container-runtime/config.toml`:
+
+```sh
+sudo sed -i '/accept-nvidia-visible-devices-as-volume-mounts/c\accept-nvidia-visible-devices-as-volume-mounts = true' /etc/nvidia-container-runtime/config.toml
+```
+
+## Create a Kind cluster (workaround for GPU device files)
+
+```sh
+kind create cluster --name substratus --config - <<EOF
+apiVersion: kind.x-k8s.io/v1alpha4
+kind: Cluster
+nodes:
+- role: control-plane
+  image: kindest/node:v1.27.3@sha256:3966ac761ae0136263ffdb6cfd4db23ef8a83cba8a463690e98317add2c9ba72
+  # required for GPU workaround
+  extraMounts:
+    - hostPath: /dev/null
+      containerPath: /var/run/nvidia-container-devices/all
+EOF
+```
+
+Create a symlink inside the control-plane node (see linked issue):
+
+```sh
+docker exec -ti substratus-control-plane ln -s /sbin/ldconfig /sbin/ldconfig.real
+```
+
+## Install the NVIDIA GPU Operator
+
+Install the operator so Kubernetes exposes `nvidia.com/gpu` resources:
+
+```sh
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia || true
+helm repo update
+helm install --wait --generate-name \
+     -n gpu-operator --create-namespace \
+     nvidia/gpu-operator --set driver.enabled=false
+```
+
+## Verify with a CUDA sample Pod
+
+```sh
+kubectl apply -f - << EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -64,3 +126,9 @@ spec:
       limits:
         nvidia.com/gpu: 1
 EOF
+```
+
+## Notes
+
+- If you hit issues, see: https://github.com/NVIDIA/nvidia-docker/issues/614#issuecomment-423991632
+- This guide assumes Docker and Kind are already installed and working.
